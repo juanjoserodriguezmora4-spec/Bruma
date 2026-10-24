@@ -1,0 +1,67 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_B64: ${{ secrets.BRUMA_KEYSTORE_BASE64 }}
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Preparar la firma (solo si configuraste los secretos)
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/bruma.jks"
+          echo "BRUMA_KEYSTORE_PATH=$RUNNER_TEMP/bruma.jks" >> "$GITHUB_ENV"
+
+      - name: Compilar
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
+        env:
+          BRUMA_KEYSTORE_PASSWORD: ${{ secrets.BRUMA_KEYSTORE_PASSWORD }}
+          BRUMA_KEY_ALIAS: ${{ secrets.BRUMA_KEY_ALIAS }}
+          BRUMA_KEY_PASSWORD: ${{ secrets.BRUMA_KEY_PASSWORD }}
+
+      - name: Renombrar los APK
+        run: |
+          mkdir -p salida
+          for f in app/build/outputs/apk/release/*.apk; do
+            abi=$(basename "$f" | sed -E 's/app-(.*)-release\.apk/\1/')
+            cp "$f" "salida/Bruma-1.0-$abi.apk"
+          done
+          ls -la salida
+
+      - name: Guardar los APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bruma-APK
+          path: salida/*.apk
+
+      - name: Publicar en Releases (para descargar desde el celular)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Bruma 1.0 (compilación ${{ github.run_number }})
+          body: |
+            Descarga **Bruma-1.0-arm64-v8a.apk** si tu celular es de los últimos años (casi todos).
+            Usa **armeabi-v7a** solo si es un equipo de 32 bits muy antiguo.
+          files: salida/*.apk
