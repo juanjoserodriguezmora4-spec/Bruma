@@ -1,4 +1,8 @@
 package com.bruma.app.ui
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.graphics.Brush
+import com.bruma.app.ui.theme.LocalBruma
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -146,12 +150,23 @@ fun BrumaRoot(
                 }
             }
 
-            if (showBars) {
-                Column(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding(),
-                ) {
+ if (showBars) {
+                   // Degradado detrás de los menús: el contenido se difumina al pasar por debajo.
+                   val fondo = LocalBruma.current.bg
+                   Column(
+                       Modifier
+                           .align(Alignment.BottomCenter)
+                           .fillMaxWidth()
+                           .background(
+                               Brush.verticalGradient(
+                                   0f to fondo.copy(alpha = 0f),
+                                   0.3f to fondo.copy(alpha = 0.85f),
+                                   1f to fondo,
+                               ),
+                           ).padding(top = 40.dp)
+                           .navigationBarsPadding(),
+                   ) {
+           
                     if (player.currentId != null) {
                         MiniPlayerBar(player, app.player) {
                             if (player.isVideo) {
