@@ -13,6 +13,9 @@ import com.bruma.app.engine.Engine
 import com.bruma.app.engine.ErrorType
 import com.bruma.app.engine.MediaInfo
 import com.bruma.app.engine.PlaylistEntry
+import com.bruma.app.engine.SearchPlatform
+import com.bruma.app.engine.SearchResult
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +33,14 @@ data class HomeUi(
     val batch: List<String> = emptyList(),
     val clip: String? = null,
     val clipInfo: MediaInfo? = null,
+    /** Texto de la última búsqueda; null cuando no se está mostrando una búsqueda. */
+    val searchQuery: String? = null,
+    val platform: SearchPlatform = SearchPlatform.YOUTUBE,
+    val searching: Boolean = false,
+    val results: List<SearchResult> = emptyList(),
+    val searchError: String? = null,
+    /** Enlace del resultado que se está analizando, para mostrar el indicador en esa tarjeta. */
+    val openingUrl: String? = null,
 )
 
 /** Lo que el usuario eligió en la hoja de formatos. */
@@ -99,6 +110,78 @@ class HomeViewModel(
     }
 
     fun dismissClip() = _ui.update { it.copy(clip = null, clipInfo = null) }
+
+    private var searchJob: Job? = null
+
+    /** Botón de la barra: si hay un enlace lo analiza; si es texto, lo busca. */
+    fun submit(raw: String = _ui.value.text) {
+        when {
+            extractUrls(raw).isNotEmpty() -> analyze(raw)
+            raw.isNotBlank() -> search(raw.trim(), _ui.value.platform)
+        }
+    }
+
+    fun setPlatform(p: SearchPlatform) {
+        val q = _ui.value.searchQuery
+        _ui.update { it.copy(platform = p) }
+        if (q != null) search(q, p)
+    }
+
+    fun clearSearch() {
+        searchJob?.cancel()
+        _ui.update {
+            it.copy(searchQuery = null, results = emptyList(), searching = false, searchError = null, text = "", openingUrl = null)
+        }
+    }
+
+    private fun search(
+        query: String,
+        platform: SearchPlatform,
+    ) {
+        searchJob?.cancel()
+        _ui.update {
+            it.copy(searchQuery = query, platform = platform, searching = true, searchError = null, results = emptyList(), error = null)
+        }
+        searchJob =
+            viewModelScope.launch {
+                try {
+                    val results = Engine.search(getApplication<Application>(), query, platform)
+                    _ui.update {
+                        it.copy(
+                            searching = false,
+                            results = results,
+                            searchError = if (results.isEmpty()) "No encontramos nada con «$query»." else null,
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val type = Engine.classify(e.message)
+                    val msg =
+                        if (type == ErrorType.NETWORK) {
+                            "Sin conexión. Revisa tu internet e intenta de nuevo."
+                        } else {
+                            "No se pudo buscar en ${platform.label}. Prueba actualizar el motor en Ajustes."
+                        }
+                    _ui.update { it.copy(searching = false, searchError = msg) }
+                }
+            }
+    }
+
+    /** Abre la hoja de formatos para un resultado de búsqueda. */
+    fun openResult(r: SearchResult) {
+        if (_ui.value.openingUrl != null) return
+        _ui.update { it.copy(openingUrl = r.url, error = null) }
+        viewModelScope.launch {
+            try {
+                val info = Engine.analyze(getApplication<Application>(), r.url)
+                _ui.update { it.copy(openingUrl = null, info = info) }
+            } catch (e: Exception) {
+                val type = Engine.classify(e.message)
+                _ui.update { it.copy(openingUrl = null, searchError = Engine.userMessage(type)) }
+            }
+        }
+    }
 
     fun analyze(raw: String = _ui.value.text) {
         val urls = extractUrls(raw)

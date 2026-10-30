@@ -264,7 +264,8 @@ fun FormatSheet(
                             modifier =
                                 Modifier
                                     .clickable {
-                                        selected = if (selected.size == playlist.entries.size) emptySet() else playlist.entries.indices.toSet()
+                                        selected =
+                                            if (selected.size == playlist.entries.size) emptySet() else playlist.entries.indices.toSet()
                                     }.padding(4.dp),
                         )
                     }

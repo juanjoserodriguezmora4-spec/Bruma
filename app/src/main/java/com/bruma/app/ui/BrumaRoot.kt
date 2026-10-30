@@ -1,12 +1,10 @@
 package com.bruma.app.ui
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.ui.graphics.Brush
-import com.bruma.app.ui.theme.LocalBruma
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.SnackbarHost
@@ -19,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -43,6 +42,7 @@ import com.bruma.app.ui.library.LibraryScreen
 import com.bruma.app.ui.library.PlaylistScreen
 import com.bruma.app.ui.player.PlayerScreen
 import com.bruma.app.ui.player.VideoScreen
+import com.bruma.app.ui.theme.LocalBruma
 
 private val TAB_ROUTES = setOf("home", "downloads", "library", "settings")
 
@@ -150,23 +150,22 @@ fun BrumaRoot(
                 }
             }
 
- if (showBars) {
-                   // Degradado detrás de los menús: el contenido se difumina al pasar por debajo.
-                   val fondo = LocalBruma.current.bg
-                   Column(
-                       Modifier
-                           .align(Alignment.BottomCenter)
-                           .fillMaxWidth()
-                           .background(
-                               Brush.verticalGradient(
-                                   0f to fondo.copy(alpha = 0f),
-                                   0.3f to fondo.copy(alpha = 0.85f),
-                                   1f to fondo,
-                               ),
-                           ).padding(top = 40.dp)
-                           .navigationBarsPadding(),
-                   ) {
-           
+            if (showBars) {
+                // Degradado detrás de los menús: el contenido se difumina al pasar por debajo.
+                val fondo = LocalBruma.current.bg
+                Column(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to fondo.copy(alpha = 0f),
+                                0.3f to fondo.copy(alpha = 0.85f),
+                                1f to fondo,
+                            ),
+                        ).padding(top = 40.dp)
+                        .navigationBarsPadding(),
+                ) {
                     if (player.currentId != null) {
                         MiniPlayerBar(player, app.player) {
                             if (player.isVideo) {

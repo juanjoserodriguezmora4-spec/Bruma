@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
             val settingsState = container.settings.flow.collectAsStateWithLifecycle(initialValue = null as AppSettings?)
             val settings = settingsState.value
             val scope = rememberCoroutineScope()
-            BrumaTheme(settings?.theme ?: "SYSTEM", settings?.reduceTransparency ?: false) {
+            BrumaTheme(settings?.theme ?: "SYSTEM", settings?.reduceTransparency ?: false, settings?.palette ?: "BRUMA") {
                 val c = LocalBruma.current
                 when {
                     settings == null -> Box(Modifier.fillMaxSize().background(c.bg))

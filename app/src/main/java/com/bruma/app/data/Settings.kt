@@ -28,6 +28,7 @@ data class AppSettings(
     val clipboard: Boolean = true,
     val folder: String = "Bruma",
     val theme: String = "SYSTEM",
+    val palette: String = "BRUMA",
     val reduceTransparency: Boolean = false,
     val onboardingDone: Boolean = false,
     val notifAsked: Boolean = false,
@@ -51,6 +52,7 @@ class SettingsRepository(
         val CLIPBOARD = booleanPreferencesKey("clipboard")
         val FOLDER = stringPreferencesKey("folder")
         val THEME = stringPreferencesKey("theme")
+        val PALETTE = stringPreferencesKey("palette")
         val REDUCE_TRANSPARENCY = booleanPreferencesKey("reduce_transparency")
         val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
         val NOTIF_ASKED = booleanPreferencesKey("notif_asked")
@@ -74,6 +76,7 @@ class SettingsRepository(
                 clipboard = p[CLIPBOARD] ?: d.clipboard,
                 folder = p[FOLDER] ?: d.folder,
                 theme = p[THEME] ?: d.theme,
+                palette = p[PALETTE] ?: d.palette,
                 reduceTransparency = p[REDUCE_TRANSPARENCY] ?: d.reduceTransparency,
                 onboardingDone = p[ONBOARDING_DONE] ?: d.onboardingDone,
                 notifAsked = p[NOTIF_ASKED] ?: d.notifAsked,

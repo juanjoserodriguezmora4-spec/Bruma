@@ -11,6 +11,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -39,6 +40,8 @@ data class BrumaColors(
     val err: Color,
     val track: Color,
     val sheet: Color,
+    /** Color del texto sobre el acento: blanco, u oscuro si el acento es muy claro. */
+    val onAccent: Color = Color.White,
 )
 
 val LightBruma =
@@ -82,6 +85,99 @@ val DarkBruma =
         track = Color(0x1FFFFFFF),
         sheet = Color(0xF2141926),
     )
+
+/**
+ * Una paleta cambia el color de acento (botones, interruptores, barra de progreso)
+ * y las cuatro manchas de color del fondo. Cada una tiene versión clara y oscura.
+ */
+data class Palette(
+    val id: String,
+    val name: String,
+    val accentLight: Color,
+    val accentDark: Color,
+    val blobsLight: List<Color>,
+    val blobsDark: List<Color>,
+) {
+    fun apply(base: BrumaColors): BrumaColors {
+        val accent = if (base.dark) accentDark else accentLight
+        return base.copy(
+            accent = accent,
+            onAccent = if (accent.luminance() > 0.4f) Color(0xFF121826) else Color.White,
+            accentSoft = accent.copy(alpha = if (base.dark) 0.16f else 0.12f),
+            blobs = if (base.dark) blobsDark else blobsLight,
+        )
+    }
+}
+
+val PALETTES =
+    listOf(
+        Palette(
+            "BRUMA",
+            "Bruma",
+            Color(0xFF4B5BFF),
+            Color(0xFF8B98FF),
+            listOf(Color(0xFFB9D2FF), Color(0xFFD8C8FF), Color(0xFFFFDCE9), Color(0xFFC6F0E4)),
+            listOf(Color(0xFF26357A), Color(0xFF3E2A6E), Color(0xFF4A2140), Color(0xFF0F4A40)),
+        ),
+        Palette(
+            "OCEANO",
+            "Océano",
+            Color(0xFF1677D6),
+            Color(0xFF5AA9FF),
+            listOf(Color(0xFFBFE0FF), Color(0xFFC6F0F4), Color(0xFFD3DEFF), Color(0xFFBFEFFF)),
+            listOf(Color(0xFF123A66), Color(0xFF0E4A55), Color(0xFF1E2A6E), Color(0xFF0F3550)),
+        ),
+        Palette(
+            "ESMERALDA",
+            "Esmeralda",
+            Color(0xFF0E9F7E),
+            Color(0xFF3CCFB4),
+            listOf(Color(0xFFB8EBDD), Color(0xFFC9E8FF), Color(0xFFE2F5C8), Color(0xFFD4F0F7)),
+            listOf(Color(0xFF0F4A40), Color(0xFF123A55), Color(0xFF2A4A1E), Color(0xFF0E3B44)),
+        ),
+        Palette(
+            "LIMA",
+            "Lima",
+            Color(0xFF4F8A10),
+            Color(0xFF9BD65A),
+            listOf(Color(0xFFDDF2C2), Color(0xFFF3F3B8), Color(0xFFCFEFD9), Color(0xFFE8F5C8)),
+            listOf(Color(0xFF2A4A1E), Color(0xFF3E4A14), Color(0xFF14402A), Color(0xFF2A3E14)),
+        ),
+        Palette(
+            "ATARDECER",
+            "Atardecer",
+            Color(0xFFE2561A),
+            Color(0xFFFF9A62),
+            listOf(Color(0xFFFFD3B8), Color(0xFFFFE1C2), Color(0xFFFFC9D6), Color(0xFFFFE9A8)),
+            listOf(Color(0xFF5A2A14), Color(0xFF4A2140), Color(0xFF5A3A10), Color(0xFF3E1E2E)),
+        ),
+        Palette(
+            "ROSA",
+            "Rosa",
+            Color(0xFFD63A72),
+            Color(0xFFFF7AA8),
+            listOf(Color(0xFFFFD0E0), Color(0xFFE6D3FF), Color(0xFFFFE0EA), Color(0xFFFFD6F2)),
+            listOf(Color(0xFF4A1B33), Color(0xFF3E2A6E), Color(0xFF4A2140), Color(0xFF2E1A3E)),
+        ),
+        Palette(
+            "LAVANDA",
+            "Lavanda",
+            Color(0xFF8A4FE0),
+            Color(0xFFB38BFF),
+            listOf(Color(0xFFE0D0FF), Color(0xFFF0D4FF), Color(0xFFD8D8FF), Color(0xFFF5E0FF)),
+            listOf(Color(0xFF3E2A6E), Color(0xFF4A2160), Color(0xFF2A2A6E), Color(0xFF3A1E55)),
+        ),
+        Palette(
+            "GRAFITO",
+            "Grafito",
+            Color(0xFF3A4150),
+            Color(0xFFC9CED8),
+            listOf(Color(0xFFDDE1E8), Color(0xFFE8EAEE), Color(0xFFD5D9E0), Color(0xFFECEEF2)),
+            listOf(Color(0xFF1E2330), Color(0xFF262B36), Color(0xFF1A1F2A), Color(0xFF2A2F3A)),
+        ),
+    )
+
+fun paletteById(id: String): Palette = PALETTES.firstOrNull { it.id == id } ?: PALETTES.first()
 
 val LocalBruma = staticCompositionLocalOf { LightBruma }
 val LocalSolid = staticCompositionLocalOf { false }
@@ -133,6 +229,7 @@ private val BrumaTypography =
 fun BrumaTheme(
     theme: String,
     reduceTransparency: Boolean,
+    palette: String = "BRUMA",
     content: @Composable () -> Unit,
 ) {
     val dark =
@@ -141,12 +238,12 @@ fun BrumaTheme(
             "DARK" -> true
             else -> isSystemInDarkTheme()
         }
-    val c = if (dark) DarkBruma else LightBruma
+    val c = paletteById(palette).apply(if (dark) DarkBruma else LightBruma)
     val scheme =
         if (dark) {
             darkColorScheme(
                 primary = c.accent,
-                onPrimary = Color.White,
+                onPrimary = c.onAccent,
                 secondary = c.ok,
                 error = c.err,
                 background = c.bg,
@@ -165,7 +262,7 @@ fun BrumaTheme(
         } else {
             lightColorScheme(
                 primary = c.accent,
-                onPrimary = Color.White,
+                onPrimary = c.onAccent,
                 secondary = c.ok,
                 error = c.err,
                 background = c.bg,

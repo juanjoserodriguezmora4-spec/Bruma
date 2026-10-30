@@ -40,6 +40,24 @@ data class MediaInfo(
     val isPlaylist: Boolean get() = entries.isNotEmpty()
 }
 
+enum class SearchPlatform(
+    val label: String,
+) {
+    YOUTUBE("YouTube"),
+    SOUNDCLOUD("SoundCloud"),
+}
+
+/** Un resultado de búsqueda. */
+data class SearchResult(
+    val url: String,
+    val title: String,
+    val author: String?,
+    val durationSec: Int,
+    val thumbnail: String?,
+    val views: Long,
+    val isLive: Boolean,
+)
+
 enum class ErrorType(
     val retryable: Boolean,
 ) {
@@ -97,6 +115,69 @@ object Engine {
         }
 
     fun version(context: Context): String? = runCatching { YoutubeDL.getInstance().version(context.applicationContext) }.getOrNull()
+
+    // ---------------------------------------------------------------- búsqueda
+
+    /**
+     * Busca por texto en YouTube ("ytsearch") o SoundCloud ("scsearch").
+     * Usa --flat-playlist para traer solo la lista de resultados, sin analizar cada vídeo.
+     */
+    suspend fun search(
+        context: Context,
+        query: String,
+        platform: SearchPlatform,
+        limit: Int = 20,
+    ): List<SearchResult> =
+        withContext(Dispatchers.IO) {
+            ensureInit(context)
+            val prefix = if (platform == SearchPlatform.SOUNDCLOUD) "scsearch" else "ytsearch"
+            val req = YoutubeDLRequest("$prefix$limit:${query.trim()}")
+            req.addOption("-J")
+            req.addOption("--flat-playlist")
+            req.addOption("--no-warnings")
+            val response = YoutubeDL.getInstance().execute(req, null, null)
+            parseSearch(JSONObject(response.out), platform)
+        }
+
+    fun parseSearch(
+        o: JSONObject,
+        platform: SearchPlatform,
+    ): List<SearchResult> {
+        val arr = o.optJSONArray("entries") ?: return emptyList()
+        val out = mutableListOf<SearchResult>()
+        for (i in 0 until arr.length()) {
+            val e = arr.optJSONObject(i) ?: continue
+            val id = e.str("id")
+            // SoundCloud trae la dirección pública en webpage_url; YouTube la trae en url.
+            val url =
+                e.str("webpage_url")
+                    ?: e.str("url")?.takeIf { it.startsWith("http") }
+                    ?: if (platform == SearchPlatform.YOUTUBE && id != null) "https://www.youtube.com/watch?v=$id" else null
+            if (url == null) continue
+            val thumbs = e.optJSONArray("thumbnails")
+            val thumb =
+                e.str("thumbnail")
+                    ?: thumbs?.let { t ->
+                        // La miniatura de tamaño medio carga rápido y se ve bien en la lista.
+                        (0 until t.length()).mapNotNull { t.optJSONObject(it)?.str("url") }.let { urls ->
+                            urls.getOrNull(urls.size / 2) ?: urls.lastOrNull()
+                        }
+                    }
+                    ?: if (platform == SearchPlatform.YOUTUBE && id != null) "https://i.ytimg.com/vi/$id/mqdefault.jpg" else null
+            out +=
+                SearchResult(
+                    url = url,
+                    title = e.str("title") ?: url,
+                    author = e.str("channel") ?: e.str("uploader") ?: e.str("artist"),
+                    durationSec = e.num("duration")?.toInt() ?: 0,
+                    thumbnail = thumb,
+                    views = e.num("view_count")?.toLong() ?: 0L,
+                    isLive = e.str("live_status") == "is_live",
+                )
+        }
+        // Sin repetidos: la lista de resultados usa el enlace como identificador.
+        return out.distinctBy { it.url }
+    }
 
     // ---------------------------------------------------------------- análisis
 

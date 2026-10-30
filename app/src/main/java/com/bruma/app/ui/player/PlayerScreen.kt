@@ -223,7 +223,7 @@ fun PlayerScreen(
                         Icon(
                             if (s.isPlaying) BI.Pause else BI.Play,
                             if (s.isPlaying) "Pausar" else "Reproducir",
-                            tint = if (c.dark) Color(0xFF0B0F1A) else Color.White,
+                            tint = if (c.dark) Color(0xFF0B0F1A) else c.onAccent,
                             modifier = Modifier.size(28.dp),
                         )
                     }
