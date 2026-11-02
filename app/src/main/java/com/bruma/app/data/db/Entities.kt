@@ -1,5 +1,6 @@
 package com.bruma.app.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -33,6 +34,12 @@ data class DownloadEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val trackId: Long? = null,
     val targetPlaylistId: Long? = null,
+    /** Si se descargó como parte de un álbum: su nombre, se graba en la canción (etiqueta ALBUM). */
+    val album: String? = null,
+    /** Artista del álbum (etiqueta ALBUM ARTIST), para que todas las canciones queden juntas. */
+    val albumArtist: String? = null,
+    /** Número de la canción dentro del álbum (1, 2, 3…). 0 = sin número. */
+    @ColumnInfo(defaultValue = "0") val trackNo: Int = 0,
 )
 
 val DownloadEntity.st: DownloadState

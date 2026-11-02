@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [DownloadEntity::class, TrackEntity::class, PlaylistEntity::class, PlaylistTrackRef::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class BrumaDatabase : RoomDatabase() {
@@ -36,10 +36,23 @@ abstract class BrumaDatabase : RoomDatabase() {
                 }
             }
 
+        /**
+         * Versión 2 → 3: las descargas de un álbum guardan el nombre del álbum, su artista y el
+         * número de pista, para grabarlos en cada canción.
+         */
+        private val MIGRATION_2_3 =
+            object : Migration(2, 3) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE downloads ADD COLUMN album TEXT")
+                    db.execSQL("ALTER TABLE downloads ADD COLUMN albumArtist TEXT")
+                    db.execSQL("ALTER TABLE downloads ADD COLUMN trackNo INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+
         fun build(context: Context): BrumaDatabase =
             Room
                 .databaseBuilder(context, BrumaDatabase::class.java, "bruma.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .fallbackToDestructiveMigration(true)
                 .build()
     }
