@@ -169,7 +169,7 @@ fun FormatSheet(
                         Text(
                             when {
                                 info != null -> info.title
-                                else -> "${batch.size} enlaces"
+                                else -> "${batch.size} canciones"
                             },
                             style = T.title,
                             color = c.text,
@@ -185,7 +185,7 @@ fun FormatSheet(
                                         info.platform,
                                         if (duration > 0) fmtDuration(duration.toLong()) else null,
                                     ).joinToString(" · ")
-                                else -> "Descarga por lotes"
+                                else -> "Descarga de varias canciones"
                             }
                         Text(sub, style = T.tiny, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (loading) {
@@ -338,6 +338,15 @@ fun FormatSheet(
                         if (settings.embedMetadata) "Carátula y metadatos: Sí" else "Sin metadatos",
                         style = T.tiny,
                         color = c.muted,
+                    )
+                }
+                if (isList) {
+                    val n = settings.maxConcurrent.coerceIn(1, 5)
+                    Text(
+                        "Se descargan de a $n al mismo tiempo; las demás esperan en cola. Puedes cambiarlo en Ajustes.",
+                        style = T.tiny,
+                        color = c.muted,
+                        modifier = Modifier.padding(top = 6.dp),
                     )
                 }
                 if (notEnough) {

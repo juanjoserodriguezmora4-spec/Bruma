@@ -23,6 +23,8 @@ class LibraryRepository(
     val tracks: Flow<List<TrackEntity>> = tracksDao.all()
     val playlists: Flow<List<PlaylistSummary>> = playlistDao.summaries()
 
+    suspend fun tracksOnce(): List<TrackEntity> = tracksDao.allOnce()
+
     fun playlist(id: Long): Flow<PlaylistEntity?> = playlistDao.observe(id)
 
     fun playlistTracks(id: Long): Flow<List<TrackEntity>> = playlistDao.tracksOf(id)

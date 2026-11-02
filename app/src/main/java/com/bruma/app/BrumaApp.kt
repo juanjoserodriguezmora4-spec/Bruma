@@ -28,6 +28,8 @@ class BrumaApp : Application() {
             runCatching { Engine.ensureInit(this@BrumaApp) }
         }
         EngineUpdateWorker.schedule(this)
+        // Si quedaron canciones en cola (por ejemplo tras reiniciar el celular), retomarlas.
+        container.appScope.launch { runCatching { container.downloads.dispatch() } }
     }
 }
 

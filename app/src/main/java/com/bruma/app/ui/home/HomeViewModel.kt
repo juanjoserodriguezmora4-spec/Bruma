@@ -9,13 +9,18 @@ import com.bruma.app.data.db.DownloadEntity
 import com.bruma.app.data.db.DownloadState
 import com.bruma.app.data.db.TrackEntity
 import com.bruma.app.data.db.st
+import com.bruma.app.engine.Discover
+import com.bruma.app.engine.DiscoverSection
 import com.bruma.app.engine.Engine
 import com.bruma.app.engine.ErrorType
 import com.bruma.app.engine.MediaInfo
 import com.bruma.app.engine.PlaylistEntry
+import com.bruma.app.engine.SearchKind
 import com.bruma.app.engine.SearchPlatform
 import com.bruma.app.engine.SearchResult
+import com.bruma.app.engine.YouTubeSearch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +49,28 @@ data class HomeUi(
     /** La hoja de formatos ya está abierta y los tamaños reales se están cargando. */
     val loadingFormats: Boolean = false,
     val formatsError: String? = null,
+    /** Canciones o álbumes, en YouTube. */
+    val kind: SearchKind = SearchKind.SONGS,
+    /** Llave para pedir la siguiente página de resultados (null = no hay más). */
+    val nextToken: String? = null,
+    val loadingMore: Boolean = false,
+    /** Modo "seleccionar varias" en los resultados. */
+    val selecting: Boolean = false,
+    val selected: Set<String> = emptySet(),
+    /** Canciones elegidas para descargar juntas (desde la búsqueda o las recomendaciones). */
+    val batchItems: List<SearchResult> = emptyList(),
+)
+
+/** Estado de la sección "Descubrir" de Inicio. */
+data class DiscoverUi(
+    val loading: Boolean = false,
+    val sections: List<DiscoverSection> = emptyList(),
+    val genres: List<String> = Discover.DEFAULT_GENRES,
+    val selectedGenre: String? = null,
+    val genreItems: List<SearchResult> = emptyList(),
+    val genreLoading: Boolean = false,
+    val error: String? = null,
+    val loadedAt: Long = 0,
 )
 
 /** ¿El enlace es una lista o álbum? Esos sí hay que analizarlos antes de abrir la hoja. */
@@ -118,6 +145,138 @@ class HomeViewModel(
 
     private var lastClip: String? = null
 
+    // ------------------------------------------------------------------ Descubrir
+
+    private val _discover = MutableStateFlow(DiscoverUi())
+    val discover: StateFlow<DiscoverUi> = _discover.asStateFlow()
+    private var discoverJob: Job? = null
+    private var genreJob: Job? = null
+
+    /** Identificadores y títulos de lo que ya tienes, para no recomendártelo otra vez. */
+    private var ownedIds: Set<String> = emptySet()
+    private var ownedTitles: Set<String> = emptySet()
+
+    private fun isNew(r: SearchResult): Boolean {
+        val id = YouTubeSearch.idOf(r.url)
+        return (id == null || id !in ownedIds) && Discover.norm(r.title) !in ownedTitles
+    }
+
+    /**
+     * Arma las recomendaciones:
+     * 1. Busca tus artistas más escuchados y, por cada uno, el "Mix" de YouTube de una canción suya.
+     * 2. Averigua sus géneros en MusicBrainz y muestra canciones del género principal.
+     * Se recalcula como máximo cada 2 horas, salvo que toques "Actualizar".
+     */
+    fun loadDiscover(force: Boolean = false) {
+        val d = _discover.value
+        if (!force && (d.loading || System.currentTimeMillis() - d.loadedAt < 2 * 60 * 60 * 1000L)) return
+        discoverJob?.cancel()
+        discoverJob =
+            viewModelScope.launch {
+                _discover.update { it.copy(loading = true, error = null, sections = if (force) emptyList() else it.sections) }
+                val app = getApplication<Application>()
+                val tracks = runCatching { c.library.tracksOnce() }.getOrDefault(emptyList())
+                ownedIds = tracks.mapNotNull { YouTubeSearch.idOf(it.sourceUrl) }.toSet()
+                ownedTitles = tracks.map { Discover.norm(it.title) }.toSet()
+
+                // Artistas ordenados por cuánto los escuchas y qué tan recientes son.
+                val now = System.currentTimeMillis()
+                val byArtist =
+                    tracks
+                        .filter { it.artist.isNotBlank() }
+                        .groupBy { Discover.cleanArtist(it.artist) }
+                        .filterKeys { it.isNotBlank() }
+                val artists =
+                    byArtist
+                        .mapValues { (_, list) ->
+                            list.sumOf { t ->
+                                val days = (now - t.addedAt) / 86_400_000.0
+                                t.playCount * 2.0 + 1.0 + (if (days < 14) 2.0 else 0.0)
+                            }
+                        }.entries
+                        .sortedByDescending { it.value }
+                        .map { it.key }
+                        .take(3)
+
+                val sections = mutableListOf<DiscoverSection>()
+                var failures = 0
+                for (artist in artists.take(2)) {
+                    val seedTrack = byArtist[artist].orEmpty().maxByOrNull { it.playCount }
+                    val seedId =
+                        YouTubeSearch.idOf(seedTrack?.sourceUrl)
+                            ?: runCatching {
+                                Engine
+                                    .search(app, artist, SearchPlatform.YOUTUBE)
+                                    .results
+                                    .firstOrNull()
+                                    ?.let { YouTubeSearch.idOf(it.url) }
+                            }.getOrNull()
+                    if (seedId == null) {
+                        failures++
+                        continue
+                    }
+                    val items =
+                        runCatching { Engine.similar(app, seedId, 25) }
+                            .onFailure { failures++ }
+                            .getOrDefault(emptyList())
+                            .filter { isNew(it) }
+                            .take(15)
+                    if (items.isNotEmpty()) {
+                        sections += DiscoverSection("a:$artist", "Porque escuchas $artist", "Canciones parecidas", items)
+                        _discover.update { it.copy(sections = sections.toList()) }
+                    }
+                }
+
+                // Géneros de tus artistas (MusicBrainz pide no más de una consulta por segundo).
+                val detected = mutableListOf<String>()
+                for ((i, artist) in artists.withIndex()) {
+                    if (i > 0) delay(1100)
+                    detected += runCatching { Discover.genresOf(artist) }.getOrDefault(emptyList())
+                }
+                val ranked =
+                    detected
+                        .groupingBy { it }
+                        .eachCount()
+                        .entries
+                        .sortedByDescending { it.value }
+                        .map { it.key }
+                val genres = (ranked + Discover.DEFAULT_GENRES).distinct().take(12)
+                val chosen = _discover.value.selectedGenre?.takeIf { it in genres } ?: ranked.firstOrNull() ?: genres.first()
+
+                _discover.update {
+                    it.copy(
+                        loading = false,
+                        sections = sections.toList(),
+                        genres = genres,
+                        loadedAt = System.currentTimeMillis(),
+                        error =
+                            if (sections.isEmpty() && artists.isNotEmpty() && failures > 0) {
+                                "No se pudieron cargar las recomendaciones. Revisa tu conexión."
+                            } else {
+                                null
+                            },
+                    )
+                }
+                selectGenre(chosen)
+            }
+    }
+
+    /** Muestra canciones populares del género elegido. */
+    fun selectGenre(genre: String) {
+        genreJob?.cancel()
+        _discover.update { it.copy(selectedGenre = genre, genreLoading = true, genreItems = emptyList()) }
+        genreJob =
+            viewModelScope.launch {
+                val items =
+                    runCatching {
+                        Engine.search(getApplication<Application>(), "$genre éxitos", SearchPlatform.YOUTUBE).results
+                    }.getOrDefault(emptyList())
+                        .filter { !it.isLive && isNew(it) }
+                        .take(20)
+                _discover.update { if (it.selectedGenre == genre) it.copy(genreItems = items, genreLoading = false) else it }
+            }
+    }
+
     fun setText(t: String) = _ui.update { it.copy(text = t, error = null) }
 
     /** Revisa el portapapeles al volver a la app y, si hay un enlace nuevo, lo analiza en silencio. */
@@ -142,39 +301,129 @@ class HomeViewModel(
     fun submit(raw: String = _ui.value.text) {
         when {
             extractUrls(raw).isNotEmpty() -> analyze(raw)
-            raw.isNotBlank() -> search(raw.trim(), _ui.value.platform)
+            raw.isNotBlank() -> search(raw.trim(), _ui.value.platform, _ui.value.kind)
         }
     }
 
     fun setPlatform(p: SearchPlatform) {
         val q = _ui.value.searchQuery
-        _ui.update { it.copy(platform = p) }
-        if (q != null) search(q, p)
+        // Los álbumes solo se buscan en YouTube.
+        val k = if (p == SearchPlatform.SOUNDCLOUD) SearchKind.SONGS else _ui.value.kind
+        _ui.update { it.copy(platform = p, kind = k) }
+        if (q != null) search(q, p, k)
+    }
+
+    fun setKind(k: SearchKind) {
+        val q = _ui.value.searchQuery
+        _ui.update { it.copy(kind = k) }
+        if (q != null) search(q, _ui.value.platform, k)
     }
 
     fun clearSearch() {
         searchJob?.cancel()
+        moreJob?.cancel()
         _ui.update {
-            it.copy(searchQuery = null, results = emptyList(), searching = false, searchError = null, text = "", openingUrl = null)
+            it.copy(
+                searchQuery = null,
+                results = emptyList(),
+                searching = false,
+                searchError = null,
+                text = "",
+                openingUrl = null,
+                nextToken = null,
+                loadingMore = false,
+                selecting = false,
+                selected = emptySet(),
+            )
         }
+    }
+
+    private var moreJob: Job? = null
+
+    /** Trae la siguiente página de resultados. Se llama sola al llegar al final de la lista. */
+    fun loadMore() {
+        val st = _ui.value
+        val token = st.nextToken ?: return
+        if (st.loadingMore || st.searching) return
+        _ui.update { it.copy(loadingMore = true) }
+        moreJob =
+            viewModelScope.launch {
+                try {
+                    val page = Engine.searchMore(token, st.kind)
+                    _ui.update {
+                        if (it.nextToken != token) return@update it
+                        val merged = (it.results + page.results).distinctBy { r -> r.url }
+                        // Si la página no trajo nada nuevo, no seguir pidiendo.
+                        val next = if (merged.size == it.results.size) null else page.next
+                        it.copy(results = merged, nextToken = next, loadingMore = false)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _ui.update { it.copy(loadingMore = false, nextToken = null) }
+                }
+            }
+    }
+
+    // ---------------- selección múltiple
+
+    fun toggleSelecting() = _ui.update { it.copy(selecting = !it.selecting, selected = emptySet()) }
+
+    fun toggleSelected(url: String) = _ui.update { it.copy(selected = if (url in it.selected) it.selected - url else it.selected + url) }
+
+    fun selectAll() =
+        _ui.update { st ->
+            val all =
+                st.results
+                    .filter { !it.isPlaylist }
+                    .map { it.url }
+                    .toSet()
+            st.copy(selected = if (st.selected.size == all.size) emptySet() else all)
+        }
+
+    fun downloadSelected() {
+        val st = _ui.value
+        startBatch(st.results.filter { it.url in st.selected })
+    }
+
+    /** Abre la hoja de formatos para varias canciones a la vez. */
+    fun startBatch(items: List<SearchResult>) {
+        val songs = items.filter { !it.isPlaylist }
+        if (songs.isEmpty()) return
+        _ui.update { it.copy(batchItems = songs, batch = songs.map { r -> r.url }) }
     }
 
     private fun search(
         query: String,
         platform: SearchPlatform,
+        kind: SearchKind,
     ) {
         searchJob?.cancel()
+        moreJob?.cancel()
         _ui.update {
-            it.copy(searchQuery = query, platform = platform, searching = true, searchError = null, results = emptyList(), error = null)
+            it.copy(
+                searchQuery = query,
+                platform = platform,
+                kind = kind,
+                searching = true,
+                searchError = null,
+                results = emptyList(),
+                nextToken = null,
+                loadingMore = false,
+                selected = emptySet(),
+                error = null,
+            )
         }
         searchJob =
             viewModelScope.launch {
                 try {
-                    val results = Engine.search(getApplication<Application>(), query, platform)
+                    val page = Engine.search(getApplication<Application>(), query, platform, kind)
+                    val results = page.results
                     _ui.update {
                         it.copy(
                             searching = false,
                             results = results,
+                            nextToken = page.next,
                             searchError = if (results.isEmpty()) "No encontramos nada con «$query»." else null,
                         )
                     }
@@ -224,9 +473,37 @@ class HomeViewModel(
         }
     }
 
-    /** Abre la hoja de formatos para un resultado de búsqueda. */
-    fun openResult(r: SearchResult) {
-        val audioOnly = _ui.value.platform == SearchPlatform.SOUNDCLOUD
+    /** Un álbum o lista: hay que leer sus canciones antes de abrir la hoja. */
+    private fun openPlaylist(r: SearchResult) {
+        if (_ui.value.openingUrl != null) return
+        Engine.cached(r.url)?.let { cached ->
+            _ui.update { it.copy(info = cached) }
+            return
+        }
+        _ui.update { it.copy(openingUrl = r.url, error = null) }
+        viewModelScope.launch {
+            try {
+                val info = Engine.analyze(getApplication<Application>(), r.url)
+                _ui.update { it.copy(openingUrl = null, info = info) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = Engine.userMessage(Engine.classify(e.message))
+                _ui.update { it.copy(openingUrl = null, error = msg) }
+            }
+        }
+    }
+
+    /** Abre la hoja de formatos para un resultado de búsqueda o una recomendación. */
+    fun openResult(
+        r: SearchResult,
+        platform: SearchPlatform = _ui.value.platform,
+    ) {
+        if (r.isPlaylist) {
+            openPlaylist(r)
+            return
+        }
+        val audioOnly = platform == SearchPlatform.SOUNDCLOUD
         openFast(
             MediaInfo(
                 url = r.url,
@@ -290,7 +567,8 @@ class HomeViewModel(
         }
     }
 
-    fun closeSheet() = _ui.update { it.copy(info = null, batch = emptyList(), loadingFormats = false, formatsError = null) }
+    fun closeSheet() =
+        _ui.update { it.copy(info = null, batch = emptyList(), batchItems = emptyList(), loadingFormats = false, formatsError = null) }
 
     fun download(choice: Choice) {
         val state = _ui.value
@@ -305,7 +583,8 @@ class HomeViewModel(
                             DownloadEntity(
                                 url = e.url,
                                 title = e.title,
-                                author = info.author,
+                                author = e.author ?: info.author,
+                                thumbnail = e.thumbnail,
                                 platform = info.platform,
                                 kind = kind,
                                 container = choice.container,
@@ -328,6 +607,19 @@ class HomeViewModel(
                                 estimatedBytes = choice.estimated,
                             ),
                         )
+                    state.batchItems.isNotEmpty() ->
+                        state.batchItems.map { r ->
+                            DownloadEntity(
+                                url = r.url,
+                                title = r.title,
+                                author = r.author,
+                                thumbnail = r.thumbnail,
+                                platform = platformOf(r.url),
+                                kind = kind,
+                                container = choice.container,
+                                quality = choice.quality,
+                            )
+                        }
                     else ->
                         state.batch.map { u ->
                             DownloadEntity(url = u, title = u, kind = kind, container = choice.container, quality = choice.quality)
@@ -338,6 +630,9 @@ class HomeViewModel(
                 it.copy(
                     info = null,
                     batch = emptyList(),
+                    batchItems = emptyList(),
+                    selecting = false,
+                    selected = emptySet(),
                     text = "",
                     clip = null,
                     clipInfo = null,

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.bruma.app.ui.home
 
 import androidx.activity.compose.BackHandler
@@ -18,11 +20,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -51,6 +56,7 @@ import com.bruma.app.data.db.DownloadEntity
 import com.bruma.app.data.db.DownloadState
 import com.bruma.app.data.db.TrackEntity
 import com.bruma.app.data.db.st
+import com.bruma.app.engine.SearchKind
 import com.bruma.app.engine.SearchPlatform
 import com.bruma.app.engine.SearchResult
 import com.bruma.app.ui.common.BI
@@ -58,6 +64,7 @@ import com.bruma.app.ui.common.Badge
 import com.bruma.app.ui.common.GlassBackground
 import com.bruma.app.ui.common.IconChip
 import com.bruma.app.ui.common.LocalSnackbar
+import com.bruma.app.ui.common.Pill
 import com.bruma.app.ui.common.PrimaryButton
 import com.bruma.app.ui.common.ProgressLine
 import com.bruma.app.ui.common.SectionHeader
@@ -90,6 +97,10 @@ fun HomeScreen(
     val active by vm.active.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val discover by vm.discover.collectAsStateWithLifecycle()
+
+    // Las recomendaciones se cargan al abrir Inicio (y se reutilizan durante 2 horas).
+    LaunchedEffect(Unit) { vm.loadDiscover() }
 
     val gate =
         rememberPermissionGate(settings.notifAsked) {
@@ -179,6 +190,26 @@ fun HomeScreen(
                         { vm.setPlatform(SearchPlatform.entries[it]) },
                     )
                 }
+                if (ui.platform == SearchPlatform.YOUTUBE) {
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SearchKind.entries.forEach { k -> Pill(k.label, ui.kind == k, { vm.setKind(k) }) }
+                        }
+                    }
+                }
+                // Barra de selección múltiple: se queda pegada arriba mientras bajas por la lista.
+                if (!ui.searching && ui.results.isNotEmpty() && ui.kind == SearchKind.SONGS) {
+                    stickyHeader(key = "selbar") {
+                        SelectionBar(
+                            count = ui.results.size,
+                            selecting = ui.selecting,
+                            selected = ui.selected.size,
+                            onToggle = vm::toggleSelecting,
+                            onAll = vm::selectAll,
+                            onDownload = vm::downloadSelected,
+                        )
+                    }
+                }
                 when {
                     ui.searching ->
                         item {
@@ -212,7 +243,31 @@ fun HomeScreen(
                             item { Text(ui.searchError ?: "", style = T.small, color = c.err, modifier = Modifier.padding(start = 6.dp)) }
                         }
                         items(ui.results, key = { "s" + it.url }) { r ->
-                            ResultRow(r, loading = ui.openingUrl == r.url) { vm.openResult(r) }
+                            val selectable = ui.selecting && !r.isPlaylist
+                            ResultRow(
+                                r,
+                                loading = ui.openingUrl == r.url,
+                                checked = if (selectable) r.url in ui.selected else null,
+                            ) {
+                                if (selectable) vm.toggleSelected(r.url) else vm.openResult(r)
+                            }
+                        }
+                        // Al llegar al final se piden más resultados solos.
+                        if (ui.nextToken != null) {
+                            item(key = "more") {
+                                LaunchedEffect(ui.results.size) { vm.loadMore() }
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 16.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Cargando más…", style = T.small, color = c.muted)
+                                }
+                            }
                         }
                     }
                 }
@@ -227,6 +282,59 @@ fun HomeScreen(
             if (active.isNotEmpty()) {
                 item { SectionHeader("En curso", action = "Ver todo", onAction = onOpenDownloads) }
                 active.take(2).forEach { d -> item(key = "d${d.id}") { MiniDownload(d, onOpenDownloads) } }
+            }
+
+            // ---------------- Descubrir
+            item(key = "disc-head") {
+                SectionHeader(
+                    "Descubrir",
+                    action = if (discover.loading) null else "Actualizar",
+                    onAction = { vm.loadDiscover(force = true) },
+                )
+            }
+            if (discover.loading && discover.sections.isEmpty()) {
+                item(key = "disc-loading") { RecoSkeleton() }
+            }
+            discover.error?.let { msg ->
+                item(key = "disc-error") { Text(msg, style = T.small, color = c.muted, modifier = Modifier.padding(start = 6.dp)) }
+            }
+            discover.sections.forEach { sec ->
+                item(key = "disc-" + sec.id) {
+                    RecoSection(
+                        title = sec.title,
+                        subtitle = sec.subtitle,
+                        songs = sec.items,
+                        loadingUrl = ui.openingUrl,
+                        onOpen = { vm.openResult(it, SearchPlatform.YOUTUBE) },
+                        onAll = { vm.startBatch(sec.items) },
+                    )
+                }
+            }
+            item(key = "disc-genres") {
+                Column {
+                    Text("Explora por género", style = T.small, color = c.muted, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(discover.genres, key = { it }) { g ->
+                            Pill(g, discover.selectedGenre == g, { vm.selectGenre(g) })
+                        }
+                    }
+                }
+            }
+            discover.selectedGenre?.let { g ->
+                item(key = "disc-genre-items") {
+                    if (discover.genreLoading) {
+                        RecoSkeleton()
+                    } else if (discover.genreItems.isNotEmpty()) {
+                        RecoSection(
+                            title = "Lo mejor de $g",
+                            subtitle = null,
+                            songs = discover.genreItems,
+                            loadingUrl = ui.openingUrl,
+                            onOpen = { vm.openResult(it, SearchPlatform.YOUTUBE) },
+                            onAll = { vm.startBatch(discover.genreItems) },
+                        )
+                    }
+                }
             }
 
             item { SectionHeader("Recientes") }
@@ -465,6 +573,7 @@ private fun fmtViews(v: Long): String =
 private fun ResultRow(
     r: SearchResult,
     loading: Boolean,
+    checked: Boolean? = null,
     onClick: () -> Unit,
 ) {
     val c = LocalBruma.current
@@ -491,6 +600,7 @@ private fun ResultRow(
             }
             val label =
                 when {
+                    r.isPlaylist -> if (r.itemCount > 0) "${r.itemCount} canciones" else "Lista"
                     r.isLive -> "EN VIVO"
                     r.durationSec > 0 -> fmtDuration(r.durationSec.toLong())
                     else -> null
@@ -514,9 +624,189 @@ private fun ResultRow(
         Column(Modifier.weight(1f)) {
             Text(r.title, style = T.title, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(3.dp))
-            val sub = listOfNotNull(r.author, fmtViews(r.views).ifBlank { null }).joinToString(" · ")
+            val sub =
+                listOfNotNull(
+                    if (r.isPlaylist) "Álbum o lista" else null,
+                    r.author,
+                    fmtViews(r.views).ifBlank { null },
+                ).joinToString(" · ")
             if (sub.isNotBlank()) Text(sub, style = T.tiny, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (loading) Text("Buscando formatos…", style = T.tiny, color = c.accent)
+            if (loading) Text(if (r.isPlaylist) "Leyendo canciones…" else "Buscando formatos…", style = T.tiny, color = c.accent)
+        }
+        if (checked != null) {
+            Spacer(Modifier.width(8.dp))
+            Checkbox(checked = checked, onCheckedChange = { onClick() }, colors = CheckboxDefaults.colors(checkedColor = c.accent))
+        }
+    }
+}
+
+/** Fila horizontal de canciones recomendadas, con botón para descargarlas todas. */
+@Composable
+private fun RecoSection(
+    title: String,
+    subtitle: String?,
+    songs: List<SearchResult>,
+    loadingUrl: String?,
+    onOpen: (SearchResult) -> Unit,
+    onAll: () -> Unit,
+) {
+    val c = LocalBruma.current
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = T.title, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (subtitle != null) Text(subtitle, style = T.tiny, color = c.muted)
+            }
+            Text(
+                "Descargar ${songs.size}",
+                style = T.label,
+                color = c.accent,
+                modifier =
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onAll() }
+                        .padding(6.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(songs, key = { it.url }) { r ->
+                Column(
+                    Modifier
+                        .width(150.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onOpen(r) },
+                ) {
+                    Box(Modifier.size(width = 150.dp, height = 84.dp)) {
+                        Thumb(r.thumbnail, r.title, Modifier.fillMaxSize(), corner = 12.dp)
+                        if (loadingUrl == r.url) {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0x66000000)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        if (r.durationSec > 0) {
+                            Text(
+                                fmtDuration(r.durationSec.toLong()),
+                                style = T.tiny,
+                                color = Color.White,
+                                modifier =
+                                    Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(4.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color(0xAA000000))
+                                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(r.title, style = T.small, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (!r.author.isNullOrBlank()) {
+                        Text(r.author, style = T.tiny, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Tarjetas vacías mientras cargan las recomendaciones. */
+@Composable
+private fun RecoSkeleton() {
+    val c = LocalBruma.current
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        repeat(3) {
+            Column(Modifier.width(150.dp)) {
+                Box(
+                    Modifier
+                        .size(width = 150.dp, height = 84.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(c.track),
+                )
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier
+                        .size(width = 120.dp, height = 10.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(c.track),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBar(
+    count: Int,
+    selecting: Boolean,
+    selected: Int,
+    onToggle: () -> Unit,
+    onAll: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val c = LocalBruma.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .glass(RoundedCornerShape(16.dp), strong = true)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (!selecting) {
+            Text("$count resultados", style = T.small, color = c.muted, modifier = Modifier.weight(1f))
+            Text(
+                "Seleccionar varias",
+                style = T.label,
+                color = c.accent,
+                modifier =
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onToggle() }
+                        .padding(6.dp),
+            )
+        } else {
+            Icon(
+                BI.Close,
+                "Salir de la selección",
+                tint = c.muted,
+                modifier =
+                    Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onToggle() }
+                        .padding(6.dp),
+            )
+            Text(
+                "$selected elegidas",
+                style = T.label,
+                color = c.text,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+            Text(
+                "Todas",
+                style = T.label,
+                color = c.accent,
+                modifier =
+                    Modifier
+                        .padding(start = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onAll() }
+                        .padding(6.dp),
+            )
+            Spacer(Modifier.weight(1f))
+            PrimaryButton(
+                "Descargar",
+                onDownload,
+                icon = BI.Download,
+                enabled = selected > 0,
+            )
         }
     }
 }

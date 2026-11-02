@@ -79,6 +79,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE state IN ('QUEUED','ANALYZING','DOWNLOADING','PROCESSING')")
     suspend fun running(): List<DownloadEntity>
 
+    @Query("SELECT * FROM downloads WHERE state = 'QUEUED' ORDER BY createdAt ASC, id ASC")
+    suspend fun queued(): List<DownloadEntity>
+
     @Query("SELECT * FROM downloads WHERE state = 'PAUSED'")
     suspend fun paused(): List<DownloadEntity>
 
@@ -93,6 +96,9 @@ interface DownloadDao {
 interface TrackDao {
     @Query("SELECT * FROM tracks ORDER BY addedAt DESC")
     fun all(): Flow<List<TrackEntity>>
+
+    @Query("SELECT * FROM tracks ORDER BY addedAt DESC")
+    suspend fun allOnce(): List<TrackEntity>
 
     @Query("SELECT * FROM tracks WHERE id = :id")
     suspend fun get(id: Long): TrackEntity?

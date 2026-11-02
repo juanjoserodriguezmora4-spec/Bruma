@@ -102,22 +102,31 @@ class DownloadWorker(
         val initial = dao.get(id) ?: return Result.failure()
         if (initial.st == DownloadState.COMPLETED || initial.st == DownloadState.CANCELED) return Result.success()
 
-        dao.setState(id, DownloadState.QUEUED.name, "En cola", null)
-        safeForeground(initial, 0f, "En cola")
-
+        // El despachador (DownloadRepository.dispatch) ya controla cuántas corren a la vez;
+        // el "gate" es solo una segunda protección.
         try {
-            repo.gate.acquire { c.settings.current().maxConcurrent }
+            repo.gate.acquire {
+                c.settings
+                    .current()
+                    .maxConcurrent
+                    .coerceIn(1, 5)
+            }
         } catch (e: CancellationException) {
             onStopped(id)
             throw e
         }
+        safeForeground(initial, 0f, "Conectando…")
         try {
             return run(id)
         } catch (e: CancellationException) {
             onStopped(id)
             throw e
         } finally {
-            withContext(NonCancellable) { repo.gate.release() }
+            withContext(NonCancellable) {
+                repo.gate.release()
+                // Libera el cupo y arranca la siguiente de la cola.
+                runCatching { repo.dispatch(finishing = id) }
+            }
         }
     }
 
@@ -287,6 +296,7 @@ class DownloadWorker(
                             isVideo = d.isVideo,
                             coverPath = cover,
                             source = d.platform,
+                            sourceUrl = d.url,
                             qualityLabel = label,
                             sizeBytes = size,
                         ),

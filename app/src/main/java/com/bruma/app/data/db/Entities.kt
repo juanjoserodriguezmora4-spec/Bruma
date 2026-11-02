@@ -57,6 +57,8 @@ data class TrackEntity(
     val addedAt: Long = System.currentTimeMillis(),
     val lastPositionMs: Long = 0,
     val playCount: Int = 0,
+    /** Enlace de donde se descargó (sirve para recomendar canciones parecidas). */
+    val sourceUrl: String? = null,
 )
 
 @Entity(tableName = "playlists")

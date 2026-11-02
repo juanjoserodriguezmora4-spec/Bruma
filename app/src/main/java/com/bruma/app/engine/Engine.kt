@@ -19,6 +19,8 @@ data class PlaylistEntry(
     val url: String,
     val title: String,
     val durationSec: Int,
+    val thumbnail: String? = null,
+    val author: String? = null,
 )
 
 /** Lo que devuelve el motor al analizar un enlace. */
@@ -56,6 +58,9 @@ data class SearchResult(
     val thumbnail: String?,
     val views: Long,
     val isLive: Boolean,
+    /** true si es un álbum o lista de reproducción (al tocarlo se ven sus canciones). */
+    val isPlaylist: Boolean = false,
+    val itemCount: Int = 0,
 )
 
 enum class ErrorType(
@@ -162,21 +167,60 @@ object Engine {
         context: Context,
         query: String,
         platform: SearchPlatform,
+        kind: SearchKind = SearchKind.SONGS,
+    ): SearchPage =
+        withContext(Dispatchers.IO) {
+            val q = query.trim()
+            // YouTube: primero la búsqueda directa (rápida y con páginas infinitas); si falla, yt-dlp.
+            if (platform == SearchPlatform.YOUTUBE) {
+                val fast = runCatching { YouTubeSearch.search(q, kind) }.getOrNull()
+                if (fast != null && fast.results.isNotEmpty()) return@withContext fast
+            }
+            ensureInit(context)
+            val target =
+                when {
+                    platform == SearchPlatform.SOUNDCLOUD -> "scsearch40:$q"
+                    kind == SearchKind.ALBUMS ->
+                        "https://www.youtube.com/results?search_query=" +
+                            java.net.URLEncoder.encode(q, "UTF-8") + "&sp=EgIQAw%3D%3D"
+                    else -> "ytsearch40:$q"
+                }
+            val req = YoutubeDLRequest(target).common()
+            req.addOption("-J")
+            req.addOption("--flat-playlist")
+            req.addOption("--playlist-end", "40")
+            val response = YoutubeDL.getInstance().execute(req, null, null)
+            SearchPage(parseSearch(JSONObject(response.out), platform), null)
+        }
+
+    /** Más resultados de una búsqueda de YouTube (solo con la búsqueda directa). */
+    suspend fun searchMore(
+        token: String,
+        kind: SearchKind,
+    ): SearchPage = YouTubeSearch.more(token, kind)
+
+    /**
+     * Canciones parecidas a una de YouTube, usando su "Mix" automático.
+     * Primero la vía directa; si falla, yt-dlp lee el mismo Mix.
+     */
+    suspend fun similar(
+        context: Context,
+        videoId: String,
         limit: Int = 20,
     ): List<SearchResult> =
         withContext(Dispatchers.IO) {
-            // YouTube: primero la búsqueda directa (rápida); si falla, se usa yt-dlp.
-            if (platform == SearchPlatform.YOUTUBE) {
-                val fast = runCatching { YouTubeSearch.search(query.trim(), limit) }.getOrNull()
-                if (!fast.isNullOrEmpty()) return@withContext fast
-            }
+            val fast = runCatching { YouTubeSearch.mix(videoId, limit) }.getOrNull()
+            if (!fast.isNullOrEmpty()) return@withContext fast
             ensureInit(context)
-            val prefix = if (platform == SearchPlatform.SOUNDCLOUD) "scsearch" else "ytsearch"
-            val req = YoutubeDLRequest("$prefix$limit:${query.trim()}").common()
+            val req = YoutubeDLRequest("https://www.youtube.com/watch?v=$videoId&list=RD$videoId").common()
             req.addOption("-J")
             req.addOption("--flat-playlist")
+            req.addOption("--yes-playlist")
+            req.addOption("--playlist-end", (limit + 1).toString())
             val response = YoutubeDL.getInstance().execute(req, null, null)
-            parseSearch(JSONObject(response.out), platform)
+            parseSearch(JSONObject(response.out), SearchPlatform.YOUTUBE)
+                .filter { YouTubeSearch.idOf(it.url) != videoId }
+                .take(limit)
         }
 
     fun parseSearch(
@@ -213,6 +257,8 @@ object Engine {
                     thumbnail = thumb,
                     views = e.num("view_count")?.toLong() ?: 0L,
                     isLive = e.str("live_status") == "is_live",
+                    isPlaylist = "list=" in url && "watch?v=" !in url,
+                    itemCount = e.num("playlist_count")?.toInt() ?: 0,
                 )
         }
         // Sin repetidos: la lista de resultados usa el enlace como identificador.
@@ -256,7 +302,18 @@ object Engine {
                 for (i in 0 until arr.length()) {
                     val e = arr.optJSONObject(i) ?: continue
                     val u = e.str("url") ?: e.str("webpage_url") ?: continue
-                    entries += PlaylistEntry(u, e.str("title") ?: u, e.num("duration")?.toInt() ?: 0)
+                    val vid = YouTubeSearch.idOf(u)
+                    val eThumb =
+                        e.str("thumbnail")
+                            ?: if (vid != null) "https://i.ytimg.com/vi/$vid/mqdefault.jpg" else null
+                    entries +=
+                        PlaylistEntry(
+                            u,
+                            e.str("title") ?: u,
+                            e.num("duration")?.toInt() ?: 0,
+                            eThumb,
+                            e.str("channel") ?: e.str("uploader"),
+                        )
                 }
             }
             return MediaInfo(
