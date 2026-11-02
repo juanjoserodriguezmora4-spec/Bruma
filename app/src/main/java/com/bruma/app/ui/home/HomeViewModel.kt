@@ -41,7 +41,32 @@ data class HomeUi(
     val searchError: String? = null,
     /** Enlace del resultado que se está analizando, para mostrar el indicador en esa tarjeta. */
     val openingUrl: String? = null,
+    /** La hoja de formatos ya está abierta y los tamaños reales se están cargando. */
+    val loadingFormats: Boolean = false,
+    val formatsError: String? = null,
 )
+
+/** ¿El enlace es una lista o álbum? Esos sí hay que analizarlos antes de abrir la hoja. */
+private fun looksLikePlaylist(url: String): Boolean {
+    val u = url.lowercase()
+    return "/playlist" in u ||
+        ("list=" in u && "v=" !in u && "youtu.be/" !in u) ||
+        "/sets/" in u ||
+        "/album/" in u ||
+        "/channel/" in u ||
+        "/@" in u
+}
+
+private fun platformOf(url: String): String? {
+    val u = url.lowercase()
+    return when {
+        "youtube.com" in u || "youtu.be" in u -> "Youtube"
+        "soundcloud.com" in u -> "Soundcloud"
+        "vimeo.com" in u -> "Vimeo"
+        "dailymotion.com" in u -> "Dailymotion"
+        else -> null
+    }
+}
 
 /** Lo que el usuario eligió en la hoja de formatos. */
 data class Choice(
@@ -168,19 +193,55 @@ class HomeViewModel(
             }
     }
 
-    /** Abre la hoja de formatos para un resultado de búsqueda. */
-    fun openResult(r: SearchResult) {
-        if (_ui.value.openingUrl != null) return
-        _ui.update { it.copy(openingUrl = r.url, error = null) }
+    /**
+     * Abre la hoja de formatos al instante con lo que ya se sabe (título, miniatura, duración)
+     * y carga los formatos y tamaños reales por detrás. Se puede descargar sin esperar.
+     */
+    private fun openFast(placeholder: MediaInfo) {
+        val url = placeholder.url
+        val cached = Engine.cached(url)
+        if (cached != null) {
+            _ui.update { it.copy(info = cached, loadingFormats = false, formatsError = null, error = null) }
+            return
+        }
+        _ui.update { it.copy(info = placeholder, loadingFormats = true, formatsError = null, error = null) }
         viewModelScope.launch {
             try {
-                val info = Engine.analyze(getApplication<Application>(), r.url)
-                _ui.update { it.copy(openingUrl = null, info = info) }
+                val real = Engine.analyze(getApplication<Application>(), url)
+                _ui.update { if (it.info?.url == url) it.copy(info = real, loadingFormats = false) else it }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val type = Engine.classify(e.message)
-                _ui.update { it.copy(openingUrl = null, searchError = Engine.userMessage(type)) }
+                val msg =
+                    if (type.retryable) {
+                        "No se pudieron cargar los tamaños. Puedes descargar igual."
+                    } else {
+                        Engine.userMessage(type)
+                    }
+                _ui.update { if (it.info?.url == url) it.copy(loadingFormats = false, formatsError = msg) else it }
             }
         }
+    }
+
+    /** Abre la hoja de formatos para un resultado de búsqueda. */
+    fun openResult(r: SearchResult) {
+        val audioOnly = _ui.value.platform == SearchPlatform.SOUNDCLOUD
+        openFast(
+            MediaInfo(
+                url = r.url,
+                title = r.title,
+                author = r.author,
+                platform = if (audioOnly) "Soundcloud" else "Youtube",
+                durationSec = r.durationSec,
+                thumbnail = r.thumbnail,
+                entries = emptyList(),
+                videoQualities = if (audioOnly) emptyList() else listOf(1080, 720, 480, 360),
+                videoSizes = emptyMap(),
+                hasVideo = !audioOnly,
+                sourceAudioKbps = 0,
+            ),
+        )
     }
 
     fun analyze(raw: String = _ui.value.text) {
@@ -190,9 +251,29 @@ class HomeViewModel(
             urls.size > 1 -> _ui.update { it.copy(batch = urls, error = null) }
             else -> {
                 val url = urls.first()
-                val cached = _ui.value.clipInfo?.takeIf { _ui.value.clip == url }
+                val cached = _ui.value.clipInfo?.takeIf { _ui.value.clip == url } ?: Engine.cached(url)
                 if (cached != null) {
                     _ui.update { it.copy(info = cached, error = null) }
+                    return
+                }
+                // Enlace de un solo vídeo o canción: abrir la hoja ya y cargar los detalles por detrás.
+                if (!looksLikePlaylist(url)) {
+                    val audioOnly = platformOf(url) == "Soundcloud"
+                    openFast(
+                        MediaInfo(
+                            url = url,
+                            title = url.substringAfter("://").removePrefix("www.").take(60),
+                            author = null,
+                            platform = platformOf(url),
+                            durationSec = 0,
+                            thumbnail = null,
+                            entries = emptyList(),
+                            videoQualities = if (audioOnly) emptyList() else listOf(1080, 720, 480, 360),
+                            videoSizes = emptyMap(),
+                            hasVideo = !audioOnly,
+                            sourceAudioKbps = 0,
+                        ),
+                    )
                     return
                 }
                 _ui.update { it.copy(analyzing = true, error = null) }
@@ -209,7 +290,7 @@ class HomeViewModel(
         }
     }
 
-    fun closeSheet() = _ui.update { it.copy(info = null, batch = emptyList()) }
+    fun closeSheet() = _ui.update { it.copy(info = null, batch = emptyList(), loadingFormats = false, formatsError = null) }
 
     fun download(choice: Choice) {
         val state = _ui.value
@@ -253,7 +334,17 @@ class HomeViewModel(
                         }
                 }
             c.downloads.enqueue(items)
-            _ui.update { it.copy(info = null, batch = emptyList(), text = "", clip = null, clipInfo = null) }
+            _ui.update {
+                it.copy(
+                    info = null,
+                    batch = emptyList(),
+                    text = "",
+                    clip = null,
+                    clipInfo = null,
+                    loadingFormats = false,
+                    formatsError = null,
+                )
+            }
         }
     }
 }

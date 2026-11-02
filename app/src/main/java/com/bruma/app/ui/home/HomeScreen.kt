@@ -269,6 +269,8 @@ fun HomeScreen(
             batch = ui.batch,
             settings = settings,
             onDismiss = vm::closeSheet,
+            loading = ui.loadingFormats,
+            loadError = ui.formatsError,
             onDownload = { choice ->
                 gate {
                     vm.download(choice)

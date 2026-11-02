@@ -21,12 +21,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +81,8 @@ fun FormatSheet(
     settings: AppSettings,
     onDismiss: () -> Unit,
     onDownload: (Choice) -> Unit,
+    loading: Boolean = false,
+    loadError: String? = null,
 ) {
     val c = LocalBruma.current
     val context = LocalContext.current
@@ -98,6 +102,14 @@ fun FormatSheet(
     var aQuality by remember { mutableIntStateOf(settings.audioQuality) }
     var selected by remember { mutableStateOf(info?.entries?.indices?.toSet() ?: emptySet()) }
     var createPlaylist by remember { mutableStateOf(true) }
+
+    // Cuando llegan los formatos reales, ajustar lo elegido si ya no existe (ej. el vídeo solo llega a 720p).
+    LaunchedEffect(qualities) {
+        if (quality !in qualities) {
+            quality = qualities.firstOrNull { it <= settings.videoQuality && it != 0 } ?: qualities.first()
+        }
+    }
+    LaunchedEffect(hasVideo) { if (!hasVideo) tab = 1 }
 
     val bitrates = bitratesFor(aFormat)
     if (bitrates.isNotEmpty() && aQuality !in bitrates) aQuality = bitrates.first()
@@ -176,9 +188,20 @@ fun FormatSheet(
                                 else -> "Descarga por lotes"
                             }
                         Text(sub, style = T.tiny, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (loading) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                                CircularProgressIndicator(color = c.accent, strokeWidth = 1.5.dp, modifier = Modifier.size(11.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Cargando tamaños… ya puedes descargar", style = T.tiny, color = c.accent)
+                            }
+                        }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
+            }
+
+            if (loadError != null) {
+                item { Notice(loadError, c.warn) }
             }
 
             item {

@@ -13,8 +13,8 @@ android {
         applicationId = "com.bruma.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
     }
 
     // Firma: si existen los secretos del keystore se usan; si no, se firma con la clave de depuración.

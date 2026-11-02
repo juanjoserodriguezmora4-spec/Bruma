@@ -78,6 +78,41 @@ object Engine {
 
     @Volatile private var ready = false
 
+    /**
+     * Carpeta donde yt-dlp guarda lo que ya resolvió de YouTube (el reproductor y sus firmas).
+     * Sin ella, cada análisis vuelve a descargar y resolver todo desde cero.
+     */
+    @Volatile private var cacheDir: String? = null
+
+    /** Enlaces ya analizados en los últimos 30 minutos: abrirlos otra vez es instantáneo. */
+    private val infoCache = LinkedHashMap<String, Pair<Long, MediaInfo>>()
+    private const val CACHE_MS = 30 * 60 * 1000L
+
+    fun cached(url: String): MediaInfo? =
+        synchronized(infoCache) {
+            val hit = infoCache[url] ?: return null
+            if (System.currentTimeMillis() - hit.first > CACHE_MS) {
+                infoCache.remove(url)
+                null
+            } else {
+                hit.second
+            }
+        }
+
+    private fun remember(
+        url: String,
+        info: MediaInfo,
+    ) = synchronized(infoCache) {
+        infoCache[url] = System.currentTimeMillis() to info
+        while (infoCache.size > 40) infoCache.remove(infoCache.keys.first())
+    }
+
+    private fun YoutubeDLRequest.common(): YoutubeDLRequest {
+        cacheDir?.let { addOption("--cache-dir", it) }
+        addOption("--no-warnings")
+        return this
+    }
+
     /** Prepara Python, yt-dlp y FFmpeg. La primera vez tarda unos segundos. */
     suspend fun ensureInit(context: Context) {
         if (ready) return
@@ -86,6 +121,7 @@ object Engine {
             withContext(Dispatchers.IO) {
                 YoutubeDL.getInstance().init(context.applicationContext)
                 FFmpeg.getInstance().init(context.applicationContext)
+                cacheDir = File(context.applicationContext.cacheDir, "yt-dlp").apply { mkdirs() }.absolutePath
             }
             ready = true
         }
@@ -96,14 +132,14 @@ object Engine {
         url: String,
     ): MediaInfo =
         withContext(Dispatchers.IO) {
+            cached(url)?.let { return@withContext it }
             ensureInit(context)
-            val req = YoutubeDLRequest(url)
+            val req = YoutubeDLRequest(url).common()
             req.addOption("-J")
             req.addOption("--flat-playlist")
             req.addOption("--no-playlist")
-            req.addOption("--no-warnings")
             val response = YoutubeDL.getInstance().execute(req, null, null)
-            parse(JSONObject(response.out), url)
+            parse(JSONObject(response.out), url).also { remember(url, it) }
         }
 
     suspend fun update(context: Context): Pair<String, String?> =
@@ -129,12 +165,16 @@ object Engine {
         limit: Int = 20,
     ): List<SearchResult> =
         withContext(Dispatchers.IO) {
+            // YouTube: primero la búsqueda directa (rápida); si falla, se usa yt-dlp.
+            if (platform == SearchPlatform.YOUTUBE) {
+                val fast = runCatching { YouTubeSearch.search(query.trim(), limit) }.getOrNull()
+                if (!fast.isNullOrEmpty()) return@withContext fast
+            }
             ensureInit(context)
             val prefix = if (platform == SearchPlatform.SOUNDCLOUD) "scsearch" else "ytsearch"
-            val req = YoutubeDLRequest("$prefix$limit:${query.trim()}")
+            val req = YoutubeDLRequest("$prefix$limit:${query.trim()}").common()
             req.addOption("-J")
             req.addOption("--flat-playlist")
-            req.addOption("--no-warnings")
             val response = YoutubeDL.getInstance().execute(req, null, null)
             parseSearch(JSONObject(response.out), platform)
         }
@@ -294,7 +334,7 @@ object Engine {
         dir: File,
         s: AppSettings,
     ): YoutubeDLRequest {
-        val req = YoutubeDLRequest(d.url)
+        val req = YoutubeDLRequest(d.url).common()
         req.addOption("-o", File(dir, "%(title).120B [%(id)s].%(ext)s").absolutePath)
         req.addOption("--no-playlist")
         req.addOption("--no-mtime")
