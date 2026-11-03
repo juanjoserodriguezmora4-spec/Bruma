@@ -424,21 +424,20 @@ object Engine {
                 "title:(?i)^(?P<title>.+?)\\s*[(\\[](?:official|video|lyric|lyrics|audio|hd|4k|visualizer|oficial|letra)[^)\\]]*[)\\]]\\s*$",
             )
             req.addOption("--embed-metadata")
+            if (!d.album.isNullOrBlank()) {
+                // Escribe el álbum dentro del archivo (va al final, así reemplaza lo que traiga YouTube).
+                fun q(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+                val args =
+                    buildString {
+                        append("-metadata ").append(q("album=${d.album}"))
+                        d.albumArtist?.let { append(" -metadata ").append(q("album_artist=$it")) }
+                        if (d.trackNo > 0) append(" -metadata ").append(q("track=${d.trackNo}"))
+                    }
+                req.addOption("--ppa", "Metadata+FFmpeg_o:$args")
+            }
             req.addOption("--write-thumbnail")
             req.addOption("--convert-thumbnails", "jpg")
             if (!(d.isVideo && d.container == "WEBM")) req.addOption("--embed-thumbnail")
-            // Canciones de un álbum: se fuerza el mismo álbum, su artista y el número de pista.
-            // Van como argumentos extra de ffmpeg al grabar los datos; al ir de últimos, mandan.
-            val album = d.album
-            if (album != null) {
-                val args =
-                    buildList {
-                        add("-metadata " + shellQuote("album=$album"))
-                        d.albumArtist?.let { add("-metadata " + shellQuote("album_artist=$it")) }
-                        if (d.trackNo > 0) add("-metadata " + shellQuote("track=${d.trackNo}"))
-                    }.joinToString(" ")
-                req.addOption("--ppa", "Metadata+ffmpeg_o:$args")
-            }
             if (!d.isVideo && s.cropCover) {
                 // Recorta la miniatura (16:9) a un cuadrado centrado para usarla como carátula.
                 req.addOption(
@@ -449,9 +448,6 @@ object Engine {
         }
         return req
     }
-
-    /** Encierra un texto entre comillas para yt-dlp (que separa los argumentos como una terminal). */
-    private fun shellQuote(s: String): String = "'" + s.replace("'", "'\"'\"'") + "'"
 
     // --------------------------------------------------------- errores
 

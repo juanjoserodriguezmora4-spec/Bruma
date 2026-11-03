@@ -579,12 +579,19 @@ class HomeViewModel(
                 when {
                     info != null && info.isPlaylist -> {
                         val pid = if (choice.createPlaylist) c.library.createPlaylist(info.title) else null
-                        // Si es un álbum, todas sus canciones llevan el mismo nombre de álbum y su número,
-                        // aunque YouTube no lo traiga en algunas (pasa con los videos oficiales).
-                        val album = albumNameOf(info)
-                        val albumArtist = info.author?.removeSuffix(" - Topic")?.trim()?.takeIf { it.isNotBlank() }
+                        // Todas las canciones llevan el mismo álbum y artista del álbum, para que
+                        // cualquier reproductor las agrupe juntas.
+                        val albumName =
+                            info.title
+                                .replace(Regex("(?i)^(album|álbum)\\s*[-:–]\\s*"), "")
+                                .replace(Regex("(?i)\\s*\\((full album|álbum completo|album completo)\\)"), "")
+                                .trim()
+                        val albumArtist = info.author?.let { Discover.cleanArtist(it) }?.ifBlank { null }
                         choice.entries.map { e ->
                             DownloadEntity(
+                                album = albumName,
+                                albumArtist = albumArtist,
+                                trackNo = info.entries.indexOf(e) + 1,
                                 url = e.url,
                                 title = e.title,
                                 author = e.author ?: info.author,
@@ -594,9 +601,6 @@ class HomeViewModel(
                                 container = choice.container,
                                 quality = choice.quality,
                                 targetPlaylistId = pid,
-                                album = album,
-                                albumArtist = if (album != null) albumArtist else null,
-                                trackNo = if (album != null) info.entries.indexOfFirst { it.url == e.url } + 1 else 0,
                             )
                         }
                     }
@@ -649,19 +653,4 @@ class HomeViewModel(
             }
         }
     }
-}
-
-/**
- * Nombre del álbum si el enlace es un álbum de YouTube Music (sus listas empiezan por
- * "OLAK5uy_" y se llaman "Album - Nombre"). Para una lista normal devuelve null: ahí cada
- * canción conserva su propio álbum.
- */
-private fun albumNameOf(info: com.bruma.app.engine.MediaInfo): String? {
-    val isAlbum = "OLAK5uy_" in info.url || info.title.startsWith("Album - ") || info.title.startsWith("Álbum - ")
-    if (!isAlbum) return null
-    return info.title
-        .removePrefix("Album - ")
-        .removePrefix("Álbum - ")
-        .trim()
-        .takeIf { it.isNotBlank() }
 }

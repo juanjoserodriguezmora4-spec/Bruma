@@ -36,10 +36,7 @@ abstract class BrumaDatabase : RoomDatabase() {
                 }
             }
 
-        /**
-         * Versión 2 → 3: las descargas de un álbum guardan el nombre del álbum, su artista y el
-         * número de pista, para grabarlos en cada canción.
-         */
+        /** Versión 2 → 3: las descargas guardan el álbum, para escribirlo dentro del archivo. */
         private val MIGRATION_2_3 =
             object : Migration(2, 3) {
                 override fun migrate(db: SupportSQLiteDatabase) {
